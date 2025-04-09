@@ -1,0 +1,3 @@
+openai==0.28
+aiogram==2.25.2
+flask
