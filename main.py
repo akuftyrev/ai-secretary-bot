@@ -2,6 +2,8 @@
 import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["LANG"] = "en_US.UTF-8"
+from dotenv import load_dotenv
+load_dotenv()  # Загрузка переменных из .env файла
 
 import sys
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
