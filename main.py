@@ -27,7 +27,7 @@ def run():
 Thread(target=run).start()
 
 # === Токены ===
-TELEGRAM_TOKEN = '7967405734:AAHQ7iyLWD5x6pT7V6F5I7ubjY4CXXn1PGU'
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 openai.api_key = OPENAI_API_KEY
