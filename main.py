@@ -2,8 +2,6 @@
 import os
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["LANG"] = "en_US.UTF-8"
-from dotenv import load_dotenv
-load_dotenv()  # Загрузка переменных из .env файла
 
 import sys
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -12,11 +10,15 @@ sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 import logging
 import openai
 import datetime
+import json
 from aiogram import Bot, Dispatcher, executor, types
 from flask import Flask
 from threading import Thread
+from dotenv import load_dotenv
 
-# === Flask-сервер для Replit (чтобы не засыпал) ===
+load_dotenv()  # Для локальной разработки
+
+# === Flask-сервер для Render (чтобы не засыпал) ===
 app = Flask('')
 
 @app.route('/')
@@ -28,69 +30,100 @@ def run():
 
 Thread(target=run).start()
 
-# === Токены ===
+# === Токены из переменных окружения ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-
 openai.api_key = OPENAI_API_KEY
 
-# === Профиль клиента ===
-client_profile = {
-    "name": "Артем",
-    "activation_date": "2025-04-03",
-    "average_tasks_per_day": 20,
-    "time_wasters": ["Маркетинг", "отдел первичных продаж"],
-    "goals": [
-        "Сделать оборот 225 000 руб (5 продаж стартеров)",
-        "Завести 3 клиентов на подписку (360 000 руб * 3)"
-    ],
-    "personally_controlled_tasks": ["Лидогенерация", "обработка лидов", "продажи"]
-}
+# === Файл для хранения информации о пробном периоде и подписке ===
+TRIALS_FILE = "trials.json"
+
+# Функция для чтения данных пользователя
+def get_user_info(user_id):
+    try:
+        with open(TRIALS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get(str(user_id), None)
+    except Exception as e:
+        logging.error("Ошибка чтения файла trials.json: %s", e)
+        return None
+
+# Функция для установки данных пользователя
+def set_user_info(user_id, info):
+    try:
+        try:
+            with open(TRIALS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except:
+            data = {}
+        data[str(user_id)] = info
+        with open(TRIALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logging.error("Ошибка сохранения файла trials.json: %s", e)
 
 # === Логирование и Telegram-бот ===
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
+# Конфигурация: срок бесплатного периода – 14 дней, стоимость продления – 990 руб. в месяц
+FREE_TRIAL_DAYS = 14
+SUBSCRIPTION_PRICE_RUB = 990  # в месяц
+MANAGER_CONTACT = "@methodk"  # контакты менеджера
+
 # === Обработка команды /start ===
 @dp.message_handler(commands=['start'])
 async def handle_start(message: types.Message):
+    user_id = message.from_user.id
+    user_info = get_user_info(user_id)
+    now = datetime.datetime.now()
+    if user_info is None:
+        # Если данных нет, создаём запись с бесплатным периодом 14 дней
+        expiration = now + datetime.timedelta(days=FREE_TRIAL_DAYS)
+        user_info = {
+            "trial_start": now.isoformat(),
+            "expiration": expiration.isoformat()
+        }
+        set_user_info(user_id, user_info)
     await message.reply("Привет! Я твой AI-секретарь. Напиши, какие задачи у тебя сегодня — помогу приоритизировать.")
 
 # === Генерация промта для GPT ===
-def build_prompt(message_text):
-    return f"""Ты — персональный AI-секретарь для бизнес-руководителя по имени {client_profile['name']}.
-Цель: помогать ему каждый день наводить порядок в задачах, снижать хаос, фиксировать итоги дня и давать рекомендации, как сэкономить время.
-Отвечай кратко, по делу, уважительно и с заботой.
-Контекст:
-– Среднее число задач в день: {client_profile['average_tasks_per_day']}
-– Основные "пожиратели времени": {', '.join(client_profile['time_wasters'])}
-– Цели: {', '.join(client_profile['goals'])}
-– Контролирует лично: {', '.join(client_profile['personally_controlled_tasks'])}
+def build_prompt(message_text, user_id):
+    # Здесь можно добавить любые дополнительные данные, индивидуальные для пользователя
+    return f"""Ты — персональный AI-секретарь для бизнес-руководителя (ID: {user_id}).
+Цель: помогать наводить порядок в задачах, снижать хаос и давать рекомендации по оптимизации времени.
 Вот новое сообщение от клиента (обрезано до 500 символов):
 {message_text[:500]}
-Дай ответ в рамках своей роли AI-секретаря.
-Если видишь, что клиент тратит время из-за отсутствия регламентов, делегирования или KPI — подсвети это, и предложи вежливо внедрить такие инструменты с помощью команды "Метод Куфтырева".
+Если видишь, что клиент тратит время из-за отсутствия регламентов, делегирования или KPI – предложи внедрить эти инструменты с помощью команды "Метод Куфтырева".
 """
-
-# === Проверка срока доступа (7 дней) ===
-def is_access_valid():
-    start_date = datetime.datetime.strptime(client_profile['activation_date'], "%Y-%m-%d")
-    return (datetime.datetime.now() - start_date).days < 7
 
 # === Обработка остальных сообщений ===
 @dp.message_handler()
 async def handle_message(message: types.Message):
-    if not is_access_valid():
-        await message.reply("⏳ Пробный период завершён. Хотите продолжить работу с AI-секретарём? Напишите менеджеру Метод Куфтырева.")
+    user_id = message.from_user.id
+    now = datetime.datetime.now()
+    user_info = get_user_info(user_id)
+    # Если пользователь не зарегистрирован — создаём запись (это редко, если /start уже вызван)
+    if user_info is None:
+        expiration = now + datetime.timedelta(days=FREE_TRIAL_DAYS)
+        user_info = {
+            "trial_start": now.isoformat(),
+            "expiration": expiration.isoformat()
+        }
+        set_user_info(user_id, user_info)
+    
+    # Преобразуем дату окончания доступа в объект datetime
+    expiration_date = datetime.datetime.fromisoformat(user_info["expiration"])
+    if now > expiration_date:
+        await message.reply(
+            f"⏳ Ваш пробный период закончился. Чтобы продолжить работу, оформите подписку за {SUBSCRIPTION_PRICE_RUB} руб. в месяц, "
+            f"написав нашему менеджеру {MANAGER_CONTACT}."
+        )
         return
 
-    prompt = build_prompt(message.text)
-    try:
-        print("👉 PROMPT:\n", prompt)
-    except Exception as e:
-        print("Ошибка логирования промта:", e)
-
+    prompt = build_prompt(message.text, user_id)
+    print("👉 PROMPT:\n", prompt)
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
@@ -109,7 +142,6 @@ async def handle_message(message: types.Message):
     except Exception as e:
         print("❌ Ошибка при финальной обработке ответа:", e)
         reply_text = "⚠️ Ошибка обработки ответа."
-
     await message.reply(reply_text)
 
 # === Запуск бота ===
